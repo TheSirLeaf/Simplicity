@@ -1,0 +1,40 @@
+Cara, ainda não ta decidido como vai funcionar essa parte da produção. Mas voltando pra escala do planeta. Cara, esse vai ser um planeta de centenas de bilhões. Claro, gerado proceduralmente. Primeiro, vou fazer um planeta ser gerado, depois, um sistema estelar, depois uma região de estrelas e daí pra frente até termos um espaço. Sobre o planeta pensei em algumas possibilidades:
+
+# Invés de grid quadrado, dividimos em células voronoi que serão setores, nesses setores, grid quadrado. Divisa entre setores leva a tela de carregamento. 
+Vantagens:
+Esferas não impactam.
+Útil de ~50km à >100.000km
+Simples
+
+Desvantagens:
+Ruim para asteroides de 500m a 1 km de diâmetro.
+Mudança entre seções: grid não seria o mesmo / tela de carregamento - Não seria um mapa contínuo.
+
+# Não usar grid.
+Vantagens:
+Mapa contínuo.
+Não nos preocupamos com formas geométricas para cobrir o globo.
+Em tese simples.
+
+Desvantagens:
+Não há grid. Algumas coisas serão complexas (ainda não sei o que).
+Alinhamento e coordenadas serão um cu.
+
+# Grid Hexagonal
+Vantagens:
+Grid global.
+Bom até pra objetos pequenos.
+Simples.
+
+Desvantagens:
+Distorção e 12 pentágonos.
+Não é quadrado.
+
+-----------------
+
+# Comentário do Reddit sobre grid hexagonal. - 13 anos atrás
+I've been tackling this very problem recently. Came up with something I think would classify as a somewhat unusual solution. I start with a subdivided icosahedron and take the dual of the triangle mesh to get a mostly hexagonal map, but with those twelve annoying pentagons that others have noted. Here's where I get a bit crazy: I randomly distort the map all over such that I'm replacing hexagons with pentagons and heptagons. The idea is that I accept that there must be irregularity, so why not make that irregularity show up everywhere and unpredictably. I blogged about it in depth here. Lots of pictures, and source code is available. You can try out a demo of the planetary generator too. Here's a picture that'll give you a quick idea of the type of tiles my solution produces.
+
+Of course, irregular tiles can really mess with game mechanics. Fortunately, my intended game mechanics don't really involve connecting up non-organic structures. Civilization-style roads are pretty much the only connected structures I envision, so they can be windy and connect at a variety of angles without issue. If you're wanting rectangular buildings and such, you might have to come up with a clever graphical solution or radical redesign to work around an irregular grid of pentagons, hexagons, and heptagons.
+
+As for A* issues, you can always just weight each tile based on its average radius or its area or some other similar metric. Crossing a big tile will cost more and take more time than crossing a small tile. For my purposes, I'm probably going to ignore that, though. I intend to do this turn-based, and I'll just claim that small tiles are more difficult to cross, which is why less distance is covered in a single turn. 

@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simplicity Cube-Sphere Architecture (Solid + Flat 2D Local View)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0b0f19; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .dashboard { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 50vh 50vh; width: 100vw; height: 100vh; gap: 4px; background: #1e293b; }
+        .panel { position: relative; background-color: #0b0f19; overflow: hidden; display: flex; justify-content: center; align-items: center; }
+        .panel-title { position: absolute; top: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); padding: 6px 12px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; z-index: 10; border: 1px solid #334155; text-transform: uppercase; letter-spacing: 0.05em; pointer-events: none; }
+        .panel-unfolded { grid-column: span 2; }
+        canvas { display: block; width: 100%; height: 100%; outline: none; }
+        .info-overlay { position: absolute; bottom: 12px; left: 12px; font-family: monospace; font-size: 0.8rem; color: #94a3b8; pointer-events: none; background: rgba(15,23,42,0.8); padding: 8px; border-radius: 4px; border: 1px solid #334155;}
+    </style>
+</head>
+<body>
+
+<div class="dashboard">
+    <!-- Top-Left: 3D Orbital View -->
+    <div class="panel">
+        <div class="panel-title">1. Orbital View (3D)</div>
+        <div id="container-3d" class="w-full h-full"></div>
+        <div class="info-overlay">Drag to Rotate | Scroll to Zoom</div>
+    </div>
+
+    <!-- Top-Right: Local 2D View -->
+    <div class="panel">
+        <div class="panel-title">2. Local View (WASD / Arrows)</div>
+        <canvas id="canvas-local"></canvas>
+        <div id="local-info" class="info-overlay">W is always up on screen. Flat 2D grid, continuous across faces.</div>
+    </div>
+
+    <!-- Bottom: Unfolded Cube Map -->
+    <div class="panel panel-unfolded">
+        <div class="panel-title">3. Unfolded Cube Map</div>
+        <canvas id="canvas-unfolded"></canvas>
+        <div id="unfolded-info" class="info-overlay">Face: 0 | U: 0.50 | V: 0.50</div>
+    </div>
+</div>
+
+<script>
+/**
+ * SIMPLICITY - ROBUST CUBE-SPHERE MATH & ENGINE
+ * Variant: solid sphere + FLAT 2D local view.
+ *
+ * The local view is a plain 2D grid of square tiles. It is built by "unfolding" the
+ * cube around the player: walking straight on the cube surface and rotating the
+ * direction by 90 degrees each time an edge is crossed. A cube edge is flat, so the
+ * grid continues across it with no seam, no teleport and no distortion.
+ * The player's heading (screen "up") is carried through the same rotations, so W
+ * always goes up on screen, no matter which face (or side of the globe) you are on.
+ */
+
+// 1. Math Core Definitions
+const RADIUS = 10;
+const COLORS = [
+    '#991b1b', // F0 (+X): Red
+    '#166534', // F1 (-Y): Green
+    '#1e40af', // F2 (-X): Blue
+    '#854d0e', // F3 (+Y): Yellow
+    '#0e7490', // F4 (+Z): Cyan
+    '#6b21a8'  // F5 (-Z): Purple
+];
+
+// Maps UV [0,1] on a given face to a normalized Vector3
+function face_uv_to_world(face, u, v) {
+    let cu = u * 2.0 - 1.0;
+    let cv = v * 2.0 - 1.0;
+    let x, y, z;
+
+    switch(face) {
+        case 0: x = 1;   y = cv;  z = -cu; break; // +X
+        case 1: x = cu;  y = -1;  z = cv;  break; // -Y
+        case 2: x = -1;  y = cv;  z = cu;  break; // -X
+        case 3: x = cu;  y = 1;   z = -cv; break; // +Y
+        case 4: x = cu;  y = cv;  z = 1;   break; // +Z
+        case 5: x = -cu; y = cv;  z = -1;  break; // -Z
+    }
+
+    let len = Math.sqrt(x*x + y*y + z*z);
+    return new THREE.Vector3(x/len, y/len, z/len);
+}
+
+// Maps a normalized Vector3 (or any point on the cube surface) back to {face, u, v}
+function sphere_to_face_uv(vec3) {
+    let ax = Math.abs(vec3.x);
+    let ay = Math.abs(vec3.y);
+    let az = Math.abs(vec3.z);
+    let face, cu, cv;
+
+    if (ax >= ay && ax >= az) {
+        if (vec3.x > 0) { face = 0; cv = vec3.y/ax; cu = -vec3.z/ax; } // +X
+        else            { face = 2; cv = vec3.y/ax; cu = vec3.z/ax; }  // -X
+    } else if (ay >= ax && ay >= az) {
+        if (vec3.y > 0) { face = 3; cu = vec3.x/ay; cv = -vec3.z/ay; } // +Y
+        else            { face = 1; cu = vec3.x/ay; cv = vec3.z/ay; }  // -Y
+    } else {
+        if (vec3.z > 0) { face = 4; cu = vec3.x/az; cv = vec3.y/az; }  // +Z
+        else            { face = 5; cu = -vec3.x/az; cv = vec3.y/az; } // -Z
+    }
+
+    return { face: face, u: (cu + 1.0)/2.0, v: (cv + 1.0)/2.0 };
+}
+
+
+// 2. Cube-surface walking (the core of the flat local view)
+// A point on the cube surface is p = [x,y,z] with one coordinate at +-1.
+// n = [x,y,z] is the axis-aligned normal of the face the point is on.
+const TILES = 32;                 // tiles per face edge
+const TILE_CUBE = 2 / TILES;      // size of one tile in cube units
+
+function v3cross(a, b) { return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+function v3dot(a, b) { return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]; }
+
+// Moves p by `dist` along vecs[0] (a unit tangent direction) on the cube surface.
+// Whenever an edge is crossed the walk continues on the next face, and every vector in
+// `vecs` (and the normal n) is rotated 90 degrees about that edge, i.e. parallel transported.
+// p, n and the vectors in vecs are mutated in place.
+function cubeWalk(p, n, vecs, dist) {
+    let rem = dist;
+    for (let it = 0; it < 16 && rem > 1e-12; it++) {
+        const d = vecs[0];
+        const na = n[0] !== 0 ? 0 : (n[1] !== 0 ? 1 : 2);
+
+        // Distance until the walk leaves the current face
+        let tmin = Infinity, kmin = -1;
+        for (let k = 0; k < 3; k++) {
+            if (k === na) continue;
+            let t;
+            if (d[k] > 1e-12) t = (1 - p[k]) / d[k];
+            else if (d[k] < -1e-12) t = (-1 - p[k]) / d[k];
+            else continue;
+            if (t < 0) t = 0;
+            if (t < tmin) { tmin = t; kmin = k; }
+        }
+
+        if (kmin === -1 || tmin >= rem) {
+            p[0] += d[0]*rem; p[1] += d[1]*rem; p[2] += d[2]*rem;
+            rem = 0;
+            break;
+        }
+
+        // Walk up to the edge, then fold onto the neighbouring face
+        p[0] += d[0]*tmin; p[1] += d[1]*tmin; p[2] += d[2]*tmin;
+        rem -= tmin;
+        const s = d[kmin] > 0 ? 1 : -1;
+        p[kmin] = s;
+
+        const nOld = [n[0], n[1], n[2]];
+        const es = [0, 0, 0]; es[kmin] = s;
+        for (const v of vecs) {
+            const a = v3dot(v, nOld);   // component along the old normal
+            const b = v3dot(v, es);     // component pointing across the edge
+            for (let c = 0; c < 3; c++) {
+                // rotation: nOld -> es, es -> -nOld
+                v[c] = v[c] - a*nOld[c] - b*es[c] + a*es[c] - b*nOld[c];
+            }
+        }
+        n[0] = es[0]; n[1] = es[1]; n[2] = es[2];
+    }
+    // Keep the point exactly on its face
+    const na2 = n[0] !== 0 ? 0 : (n[1] !== 0 ? 1 : 2);
+    p[na2] = n[na2];
+    for (let k = 0; k < 3; k++) { if (p[k] > 1) p[k] = 1; else if (p[k] < -1) p[k] = -1; }
+}
+
+
+// 3. Global State & Generation
+const state = {
+    // Player on the cube surface (cube coordinates), start at center of F0 (+X)
+    cp: [1, 0, 0],      // position
+    cn: [1, 0, 0],      // face normal
+    cup: [0, 1, 0],     // heading: what "up" on the local screen means (what W follows)
+    // Derived (kept in sync every frame) for the 3D view and the unfolded map
+    player3D: new THREE.Vector3(1, 0, 0),
+    up: new THREE.Vector3(0, 1, 0),
+    geodesic3D: []
+};
+
+// Generate points of a great circle (geodesic)
+function makeGeodesic(num_segments) {
+    let points = [];
+    let normal = new THREE.Vector3(1, 1.5, 0.5).normalize();
+    let start = new THREE.Vector3().crossVectors(normal, new THREE.Vector3(0,1,0)).normalize();
+
+    for (let i = 0; i <= num_segments; i++) {
+        let angle = (Math.PI * 2 * i) / num_segments;
+        points.push(start.clone().applyAxisAngle(normal, angle));
+    }
+    return points;
+}
+state.geodesic3D = makeGeodesic(300);
+
+// Set of tiles the geodesic passes through (so it can be shown as tiles in the flat view)
+const geodesicTiles = new Set();
+makeGeodesic(6000).forEach(p => {
+    const f = sphere_to_face_uv(p);
+    const i = Math.min(TILES - 1, Math.floor(f.u * TILES));
+    const j = Math.min(TILES - 1, Math.floor(f.v * TILES));
+    geodesicTiles.add(f.face * TILES * TILES + i * TILES + j);
+});
+
+
+// 4. Setup Three.js (Orbital View)
+const container3D = document.getElementById('container-3d');
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, container3D.clientWidth / container3D.clientHeight, 0.1, 1000);
+camera.position.set(15, 15, 20);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(container3D.clientWidth, container3D.clientHeight);
+container3D.appendChild(renderer.domElement);
+
+let isDragging = false, prevMouse = {x:0, y:0};
+container3D.addEventListener('mousedown', e => { isDragging = true; prevMouse = {x: e.clientX, y: e.clientY}; });
+window.addEventListener('mouseup', () => isDragging = false);
+window.addEventListener('mousemove', e => {
+    if(!isDragging) return;
+    let dx = e.clientX - prevMouse.x;
+    let dy = e.clientY - prevMouse.y;
+    prevMouse = {x: e.clientX, y: e.clientY};
+
+    let center = new THREE.Vector3(0,0,0);
+    camera.position.sub(center);
+    camera.position.applyAxisAngle(new THREE.Vector3(0,1,0), -dx * 0.01);
+    let right = new THREE.Vector3().crossVectors(camera.position, camera.up).normalize();
+    camera.position.applyAxisAngle(right, -dy * 0.01);
+    camera.position.add(center);
+    camera.lookAt(center);
+});
+container3D.addEventListener('wheel', e => {
+    let zoom = e.deltaY > 0 ? 1.1 : 0.9;
+    camera.position.multiplyScalar(zoom);
+});
+
+// Spherified cube mesh built manually to match our math perfectly
+const sphereGeom = new THREE.BufferGeometry();
+const segments = 32;
+const vertices = [];
+
+for (let face = 0; face < 6; face++) {
+    for (let i = 0; i <= segments; i++) {
+        for (let j = 0; j <= segments; j++) {
+            let p = face_uv_to_world(face, i / segments, j / segments).multiplyScalar(RADIUS);
+            vertices.push(p.x, p.y, p.z);
+        }
+    }
+}
+
+const indices = [];
+let vOffset = 0;
+for (let face = 0; face < 6; face++) {
+    for (let i = 0; i < segments; i++) {
+        for (let j = 0; j < segments; j++) {
+            let a = vOffset + i * (segments + 1) + j;
+            let b = vOffset + i * (segments + 1) + (j + 1);
+            let c = vOffset + (i + 1) * (segments + 1) + j;
+            let d = vOffset + (i + 1) * (segments + 1) + (j + 1);
+            indices.push(a, b, d);
+            indices.push(a, d, c);
+        }
+    }
+    vOffset += (segments + 1) * (segments + 1);
+}
+
+sphereGeom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+sphereGeom.setIndex(indices);
+
+const indicesPerFace = segments * segments * 6;
+for (let face = 0; face < 6; face++) {
+    sphereGeom.addGroup(face * indicesPerFace, indicesPerFace, face);
+}
+
+// SOLID, opaque materials (DoubleSide so winding order never makes faces vanish)
+const materials = COLORS.map(c => new THREE.MeshBasicMaterial({
+    color: c,
+    side: THREE.DoubleSide,
+    transparent: false,
+    opacity: 1.0
+}));
+const planetMesh = new THREE.Mesh(sphereGeom, materials);
+scene.add(planetMesh);
+
+// Grid overlay on the solid surface (8x8 divisions per face, drawn slightly above it)
+(function addGridOverlay() {
+    const DIV = 8, SAMPLES = 32;
+    const pts = [];
+    for (let face = 0; face < 6; face++) {
+        for (let k = 0; k <= DIV; k++) {
+            let t = k / DIV;
+            for (let s = 0; s < SAMPLES; s++) {
+                let a = s / SAMPLES, b = (s + 1) / SAMPLES;
+                pts.push(face_uv_to_world(face, t, a).multiplyScalar(RADIUS * 1.002),
+                         face_uv_to_world(face, t, b).multiplyScalar(RADIUS * 1.002));
+                pts.push(face_uv_to_world(face, a, t).multiplyScalar(RADIUS * 1.002),
+                         face_uv_to_world(face, b, t).multiplyScalar(RADIUS * 1.002));
+            }
+        }
+    }
+    const g = new THREE.BufferGeometry().setFromPoints(pts);
+    const m = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 });
+    scene.add(new THREE.LineSegments(g, m));
+})();
+
+// Geodesic 3D Line
+const geoGeom = new THREE.BufferGeometry().setFromPoints(state.geodesic3D.map(p => p.clone().multiplyScalar(RADIUS * 1.01)));
+const geoMat = new THREE.LineBasicMaterial({ color: 0x22c55e });
+scene.add(new THREE.Line(geoGeom, geoMat));
+
+// Player 3D Sphere
+const playerMesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 16), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+scene.add(playerMesh);
+
+// Heading arrow (shows where W will walk)
+const headingArrow = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(1,0,0), 2.5, 0xffffff, 0.8, 0.5);
+scene.add(headingArrow);
+camera.lookAt(0,0,0);
+
+
+// 5. Movement: WASD walks on the cube surface, heading is carried along
+const keys = { w:false, a:false, s:false, d:false };
+const KEYMAP = { w:'w', a:'a', s:'s', d:'d', arrowup:'w', arrowleft:'a', arrowdown:'s', arrowright:'d' };
+window.addEventListener('keydown', e => {
+    const k = KEYMAP[e.key.toLowerCase()];
+    if (k) { keys[k] = true; if (e.key.startsWith('Arrow')) e.preventDefault(); }
+});
+window.addEventListener('keyup', e => {
+    const k = KEYMAP[e.key.toLowerCase()];
+    if (k) keys[k] = false;
+});
+
+function processMovement() {
+    const SPEED = 0.006; // cube units per frame (1 tile = 0.0625)
+    const p = state.cp, n = state.cn, T = state.cup;
+    const R = v3cross(T, n); // screen-right on the surface
+
+    let d = [0, 0, 0];
+    if (keys.w) for (let c = 0; c < 3; c++) d[c] += T[c];
+    if (keys.s) for (let c = 0; c < 3; c++) d[c] -= T[c];
+    if (keys.d) for (let c = 0; c < 3; c++) d[c] += R[c];
+    if (keys.a) for (let c = 0; c < 3; c++) d[c] -= R[c];
+
+    const len = Math.hypot(d[0], d[1], d[2]);
+    if (len > 1e-9) {
+        d = [d[0]/len, d[1]/len, d[2]/len];
+        // d and T are rotated together at every edge crossing
+        cubeWalk(p, n, [d, T], SPEED);
+
+        // The heading always stays aligned with the cube grid: snap away float drift
+        let k = 0;
+        if (Math.abs(T[1]) > Math.abs(T[k])) k = 1;
+        if (Math.abs(T[2]) > Math.abs(T[k])) k = 2;
+        const sg = T[k] >= 0 ? 1 : -1;
+        T[0] = T[1] = T[2] = 0; T[k] = sg;
+    }
+
+    // Sync the derived values used by the 3D view and the unfolded map
+    state.player3D.set(p[0], p[1], p[2]).normalize();
+    // Heading as a tangent of the sphere (for the 3D arrow)
+    state.up.set(T[0], T[1], T[2]);
+    state.up.addScaledVector(state.player3D, -state.up.dot(state.player3D)).normalize();
+}
+
+
+// 6. Canvas 2D Core Drawing Methods (used by the unfolded map)
+function drawGeodesicLines(ctx, scale, layoutMap = null, singleFaceFilter = -1) {
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = Math.max(2, scale * 0.02);
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+
+    let prev = null;
+    for (let i = 0; i <= state.geodesic3D.length; i++) {
+        let p = state.geodesic3D[i % state.geodesic3D.length];
+        let fuv = sphere_to_face_uv(p);
+
+        if (singleFaceFilter !== -1 && fuv.face !== singleFaceFilter) {
+            prev = null;
+            continue;
+        }
+
+        let layout = layoutMap ? layoutMap[fuv.face] : {x: 0, y: 0};
+        if (layoutMap && !layout) continue;
+
+        let px = layout.x + fuv.u * scale;
+        let py = layout.y + (1.0 - fuv.v) * scale;
+
+        if (!prev || prev.face !== fuv.face || Math.abs(fuv.u - prev.u) > 0.5 || Math.abs(fuv.v - prev.v) > 0.5) {
+            ctx.moveTo(px, py);
+        } else {
+            ctx.lineTo(px, py);
+        }
+        prev = fuv;
+    }
+    ctx.stroke();
+}
+
+
+// 7. Unfolded Cube Map View
+const canvasUnfolded = document.getElementById('canvas-unfolded');
+const ctxUnfolded = canvasUnfolded.getContext('2d');
+
+function renderUnfoldedMap() {
+    canvasUnfolded.width = canvasUnfolded.parentElement.clientWidth;
+    canvasUnfolded.height = canvasUnfolded.parentElement.clientHeight;
+    ctxUnfolded.clearRect(0, 0, canvasUnfolded.width, canvasUnfolded.height);
+
+    let faceSize = Math.min(canvasUnfolded.width / 4, canvasUnfolded.height / 3) * 0.9;
+    let offsetX = (canvasUnfolded.width - (faceSize * 4)) / 2;
+    let offsetY = (canvasUnfolded.height - (faceSize * 3)) / 2;
+
+    // Layout: F3(top), F1(bottom), [F2][F4][F0][F5](middle)
+    const LAYOUT = {
+        3: { col: 1, row: 0 },
+        2: { col: 0, row: 1 },
+        4: { col: 1, row: 1 },
+        0: { col: 2, row: 1 },
+        5: { col: 3, row: 1 },
+        1: { col: 1, row: 2 }
+    };
+
+    let layoutCoords = {};
+
+    ctxUnfolded.lineWidth = 1;
+    for (let face = 0; face < 6; face++) {
+        let x = offsetX + LAYOUT[face].col * faceSize;
+        let y = offsetY + LAYOUT[face].row * faceSize;
+        layoutCoords[face] = { x: x, y: y };
+
+        ctxUnfolded.fillStyle = COLORS[face];
+        ctxUnfolded.globalAlpha = 0.6;
+        ctxUnfolded.fillRect(x, y, faceSize, faceSize);
+
+        ctxUnfolded.globalAlpha = 1.0;
+        ctxUnfolded.strokeStyle = '#334155';
+        ctxUnfolded.strokeRect(x, y, faceSize, faceSize);
+
+        ctxUnfolded.beginPath();
+        for(let i=1; i<10; i++) {
+            ctxUnfolded.moveTo(x + (i/10)*faceSize, y); ctxUnfolded.lineTo(x + (i/10)*faceSize, y + faceSize);
+            ctxUnfolded.moveTo(x, y + (i/10)*faceSize); ctxUnfolded.lineTo(x + faceSize, y + (i/10)*faceSize);
+        }
+        ctxUnfolded.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctxUnfolded.stroke();
+
+        ctxUnfolded.fillStyle = '#fff';
+        ctxUnfolded.font = "bold 14px Arial";
+        ctxUnfolded.fillText("F" + face, x + 8, y + 22);
+    }
+
+    drawGeodesicLines(ctxUnfolded, faceSize, layoutCoords);
+
+    let pFuv = sphere_to_face_uv(state.player3D);
+    let px = layoutCoords[pFuv.face].x + pFuv.u * faceSize;
+    let py = layoutCoords[pFuv.face].y + (1.0 - pFuv.v) * faceSize;
+
+    ctxUnfolded.fillStyle = '#ff0000';
+    ctxUnfolded.beginPath();
+    ctxUnfolded.arc(px, py, 6, 0, Math.PI*2);
+    ctxUnfolded.fill();
+
+    document.getElementById('unfolded-info').innerText = `Face: ${pFuv.face} | U: ${pFuv.u.toFixed(3)} | V: ${pFuv.v.toFixed(3)}`;
+}
+
+
+// 8. Local 2D View: a flat grid of square tiles, player fixed at the center
+const canvasLocal = document.getElementById('canvas-local');
+const ctxLocal = canvasLocal.getContext('2d');
+const localInfo = document.getElementById('local-info');
+
+const VIEW_TILES = 18; // how many tiles fit in the smaller dimension of the panel
+
+// Lightens a #rrggbb color by a factor
+function shade(hex, f) {
+    const n = parseInt(hex.slice(1), 16);
+    const r = Math.min(255, Math.round(((n >> 16) & 255) * f));
+    const g = Math.min(255, Math.round(((n >> 8) & 255) * f));
+    const b = Math.min(255, Math.round((n & 255) * f));
+    return `rgb(${r},${g},${b})`;
+}
+const SHADE_A = COLORS.map(c => shade(c, 1.0));
+const SHADE_B = COLORS.map(c => shade(c, 1.3));
+const GEO_A = '#16a34a', GEO_B = '#22c55e';
+
+function renderLocalView() {
+    const W = canvasLocal.parentElement.clientWidth;
+    const H = canvasLocal.parentElement.clientHeight;
+    if (canvasLocal.width !== W || canvasLocal.height !== H) {
+        canvasLocal.width = W;
+        canvasLocal.height = H;
+    }
+    ctxLocal.fillStyle = '#0b0f19';
+    ctxLocal.fillRect(0, 0, W, H);
+
+    const cx = W / 2, cy = H / 2;
+    const tilePx = Math.min(W, H) / VIEW_TILES;
+    const nx = Math.ceil(cx / tilePx) + 1;
+    const ny = Math.ceil(cy / tilePx) + 1;
+    const cols = 2 * nx + 1, rows = 2 * ny + 1;
+
+    const p = state.cp, n = state.cn, T = state.cup;
+    const R = v3cross(T, n);
+
+    // Where the player sits inside its own tile (0..1), measured along screen right / up
+    const xs = (v3dot(p, R) + 1) / TILE_CUBE;
+    const ys = (v3dot(p, T) + 1) / TILE_CUBE;
+    const fx = xs - Math.floor(xs);
+    const fy = ys - Math.floor(ys);
+
+    // For every screen tile, find which cube tile it is by walking the unfolded plane
+    const faceArr = new Int8Array(cols * rows);
+    const iArr = new Int8Array(cols * rows);
+    const jArr = new Int8Array(cols * rows);
+    const probe = { x: 0, y: 0, z: 0 };
+
+    for (let r = -ny; r <= ny; r++) {
+        for (let m = -nx; m <= nx; m++) {
+            const dx = m + 0.5 - fx; // tile-center offset in tiles, along screen right
+            const dy = r + 0.5 - fy; // ... and along screen up
+            const len = Math.hypot(dx, dy);
+
+            const pp = [p[0], p[1], p[2]];
+            const nn = [n[0], n[1], n[2]];
+            if (len > 1e-9) {
+                const d = [
+                    (R[0]*dx + T[0]*dy) / len,
+                    (R[1]*dx + T[1]*dy) / len,
+                    (R[2]*dx + T[2]*dy) / len
+                ];
+                cubeWalk(pp, nn, [d], len * TILE_CUBE);
+            }
+            probe.x = pp[0]; probe.y = pp[1]; probe.z = pp[2];
+            const f = sphere_to_face_uv(probe);
+            const idx = (r + ny) * cols + (m + nx);
+            faceArr[idx] = f.face;
+            iArr[idx] = Math.min(TILES - 1, Math.floor(f.u * TILES));
+            jArr[idx] = Math.min(TILES - 1, Math.floor(f.v * TILES));
+        }
+    }
+
+    // Tiles (screen Y grows downward, so "up" is negative Y)
+    for (let r = -ny; r <= ny; r++) {
+        for (let m = -nx; m <= nx; m++) {
+            const idx = (r + ny) * cols + (m + nx);
+            const face = faceArr[idx], i = iArr[idx], j = jArr[idx];
+            const odd = (i + j) & 1;
+            const isGeo = geodesicTiles.has(face * TILES * TILES + i * TILES + j);
+            ctxLocal.fillStyle = isGeo ? (odd ? GEO_B : GEO_A) : (odd ? SHADE_B[face] : SHADE_A[face]);
+            const x = cx + (m - fx) * tilePx;
+            const y = cy - (r + 1 - fy) * tilePx;
+            ctxLocal.fillRect(x - 0.5, y - 0.5, tilePx + 1, tilePx + 1);
+
+            // Small face label in the tile just past each face center
+            if (i === TILES / 2 && j === TILES / 2) {
+                ctxLocal.fillStyle = 'rgba(255,255,255,0.85)';
+                ctxLocal.font = 'bold ' + Math.round(tilePx * 0.5) + 'px Arial';
+                ctxLocal.textAlign = 'center';
+                ctxLocal.textBaseline = 'middle';
+                ctxLocal.fillText('F' + face, x + tilePx / 2, y + tilePx / 2);
+            }
+        }
+    }
+
+    // Regular grid lines
+    ctxLocal.beginPath();
+    for (let m = -nx; m <= nx + 1; m++) {
+        const x = cx + (m - fx) * tilePx;
+        ctxLocal.moveTo(x, 0); ctxLocal.lineTo(x, H);
+    }
+    for (let r = -ny; r <= ny + 1; r++) {
+        const y = cy - (r - fy) * tilePx;
+        ctxLocal.moveTo(0, y); ctxLocal.lineTo(W, y);
+    }
+    ctxLocal.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctxLocal.lineWidth = 1;
+    ctxLocal.stroke();
+
+    // Face borders: wherever two neighbouring tiles belong to different faces
+    ctxLocal.beginPath();
+    for (let r = -ny; r <= ny; r++) {
+        for (let m = -nx; m <= nx; m++) {
+            const idx = (r + ny) * cols + (m + nx);
+            const x = cx + (m - fx) * tilePx;
+            const y = cy - (r + 1 - fy) * tilePx;
+            if (m < nx && faceArr[idx] !== faceArr[idx + 1]) {          // right neighbour
+                ctxLocal.moveTo(x + tilePx, y); ctxLocal.lineTo(x + tilePx, y + tilePx);
+            }
+            if (r < ny && faceArr[idx] !== faceArr[idx + cols]) {       // neighbour above
+                ctxLocal.moveTo(x, y); ctxLocal.lineTo(x + tilePx, y);
+            }
+        }
+    }
+    ctxLocal.strokeStyle = '#facc15';
+    ctxLocal.lineWidth = 3;
+    ctxLocal.stroke();
+
+    // Player fixed at the center, with a heading triangle pointing up (the W direction)
+    const pr = Math.max(6, tilePx * 0.3);
+    ctxLocal.shadowColor = '#000';
+    ctxLocal.shadowBlur = 4;
+    ctxLocal.fillStyle = '#ff0000';
+    ctxLocal.beginPath();
+    ctxLocal.arc(cx, cy, pr, 0, Math.PI*2);
+    ctxLocal.fill();
+    ctxLocal.shadowBlur = 0;
+    ctxLocal.fillStyle = '#ffffff';
+    ctxLocal.beginPath();
+    ctxLocal.moveTo(cx, cy - pr - 12);
+    ctxLocal.lineTo(cx - 6, cy - pr - 2);
+    ctxLocal.lineTo(cx + 6, cy - pr - 2);
+    ctxLocal.closePath();
+    ctxLocal.fill();
+
+    const pF = sphere_to_face_uv(state.player3D);
+    localInfo.innerText = `Face F${pF.face} | tile (${Math.min(TILES-1, Math.floor(pF.u*TILES))}, ${Math.min(TILES-1, Math.floor(pF.v*TILES))}) | W = up on screen`;
+}
+
+
+// 9. Main Loop & Resizing
+window.addEventListener('resize', () => {
+    camera.aspect = container3D.clientWidth / container3D.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(container3D.clientWidth, container3D.clientHeight);
+});
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    processMovement();
+
+    // Update 3D visuals
+    playerMesh.position.copy(state.player3D).multiplyScalar(RADIUS * 1.05);
+    headingArrow.position.copy(state.player3D).multiplyScalar(RADIUS * 1.05);
+    headingArrow.setDirection(state.up);
+    renderer.render(scene, camera);
+
+    // Update 2D canvas views
+    renderUnfoldedMap();
+    renderLocalView();
+}
+
+animate();
+</script>
+</body>
+</html>

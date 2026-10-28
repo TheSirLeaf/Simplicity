@@ -1,0 +1,55 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a73e8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#00d4ff;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Fundo circular -->
+  <circle cx="128" cy="128" r="120" fill="url(#grad)" opacity="0.15"/>
+  
+  <!-- Cube-sphere wireframe estilizado -->
+  <g stroke="url(#grad)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Face frontal (quadrado) -->
+    <rect x="68" y="68" width="120" height="120" rx="8" stroke-width="4"/>
+    
+    <!-- Linhas de grade sugerindo chunks -->
+    <g stroke-width="1.5" opacity="0.6">
+      <line x1="128" y1="68" x2="128" y2="188"/>
+      <line x1="68" y1="128" x2="188" y2="128"/>
+      <line x1="68" y1="100" x2="188" y2="100"/>
+      <line x1="68" y1="156" x2="188" y2="156"/>
+      <line x1="100" y1="68" x2="100" y2="188"/>
+      <line x1="156" y1="68" x2="156" y2="188"/>
+    </g>
+    
+    <!-- Linhas diagonais sugerindo projeção 3D -->
+    <g stroke-width="2" opacity="0.4">
+      <line x1="68" y1="68" x2="44" y2="44"/>
+      <line x1="188" y1="68" x2="212" y2="44"/>
+      <line x1="68" y1="188" x2="44" y2="212"/>
+      <line x1="188" y1="188" x2="212" y2="212"/>
+    </g>
+    
+    <!-- Face superior (paralelogramo) -->
+    <polygon points="68,68 188,68 212,44 44,44" stroke-width="3" opacity="0.8"/>
+    
+    <!-- Face lateral -->
+    <polygon points="188,68 188,188 212,212 212,44" stroke-width="3" opacity="0.8"/>
+  </g>
+  
+  <!-- Partícula/acelerador orbital -->
+  <circle cx="128" cy="128" r="140" fill="none" stroke="#00d4ff" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.5">
+    <animateTransform attributeName="transform" type="rotate" from="0 128 128" to="360 128 128" dur="20s" repeatCount="indefinite"/>
+  </circle>
+  
+  <!-- Ponto central (player) -->
+  <circle cx="128" cy="128" r="6" fill="#00d4ff">
+    <animate attributeName="r" values="6;8;6" dur="1.5s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="1;0.5;1" dur="1.5s" repeatCount="indefinite"/>
+  </circle>
+  
+  <!-- Texto S -->
+  <text x="128" y="142" font-family="monospace" font-size="48" font-weight="bold" fill="url(#grad)" text-anchor="middle" opacity="0.8">S</text>
+</svg>

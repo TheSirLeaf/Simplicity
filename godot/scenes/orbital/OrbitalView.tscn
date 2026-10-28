@@ -1,0 +1,103 @@
+[gd_scene load_steps=6 format=3 uid://b8c7d6e5f4]
+
+[ext_resource type="Script" path="res://scenes/orbital/OrbitalView.gd" id="1"]
+[ext_resource type="Script" path="res://systems/chunk_loader.gd" id="2"]
+[ext_resource type="Script" path="res://systems/global_mega_structures.gd" id="3"]
+[ext_resource type="Shader" path="res://resources/shaders/planet_shader.gdshader" id="4"]
+[ext_resource type="Script" path="res://core/planet_math.gd" id="5"]
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_1"]
+surfaces = [
+{
+"primitives": 4,
+"arrays": [
+[],
+[],
+[],
+[],
+[],
+[],
+[],
+[],
+[Vector3(-0.5, -0.5, -0.5), Vector3(0.5, -0.5, -0.5), Vector3(0.5, 0.5, -0.5), Vector3(-0.5, 0.5, -0.5), Vector3(-0.5, -0.5, 0.5), Vector3(0.5, -0.5, 0.5), Vector3(0.5, 0.5, 0.5), Vector3(-0.5, 0.5, 0.5)],
+[0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 0, 1, 5, 5, 4, 0, 2, 3, 7, 7, 6, 2, 1, 0, 4, 4, 7, 5, 3, 2, 6, 6, 5, 3]
+],
+"morph_arrays": [],
+"blend_shapes": [],
+"skeleton": "",
+"skin": ""
+}
+]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1"]
+shader = ExtResource("4")
+transparent = false
+cull_mode = 0
+
+[sub_resource type="Camera3D" id="Camera3D_1"]
+far = 100000000.0
+near = 0.1
+fov = 60.0
+
+[sub_resource type="SpringArm3D" id="SpringArm3D_1"]
+spring_length = 20000000.0
+margin = 1.0
+
+[node name="OrbitalView" type="Node3D"]
+script = ExtResource("1")
+
+[node name="PlanetSphere" type="MeshInstance3D" parent="."]
+mesh = SubResource("ArrayMesh_1")
+material_override = SubResource("StandardMaterial3D_1")
+
+[node name="MegaStructureRenderer" type="MeshInstance3D" parent="."]
+mesh = ArrayMesh { }
+material_override = StandardMaterial3D {
+	shader = ExtResource("4")
+	render_method = 1
+}
+
+[node name="CameraRig" type="Node3D" parent="."]
+[node name="SpringArm" type="SpringArm3D" parent="CameraRig"]
+spring_length = 20000000.0
+[node name="OrbitalCamera" type="Camera3D" parent="SpringArm"]
+far = 100000000.0
+near = 0.1
+fov = 60.0
+
+[node name="RayCast" type="RayCast3D" parent="OrbitalCamera"]
+enabled = true
+target_position = Vector3(0, 0, -100000000.0)
+
+[node name="MegaStructureLines" type="Line2D" parent="."]
+width = 3.0
+default_color = Color(0.2, 0.8, 1.0, 0.8)
+
+[node name="DebugGrid" type="Node3D" parent="."]
+
+[node name="UI" type="CanvasLayer" parent="."]
+[node name="InfoPanel" type="Panel" parent="UI"]
+layout_mode = 2
+anchors_preset = 9
+offset_left = 10.0
+offset_top = 10.0
+offset_right = 310.0
+offset_bottom = 210.0
+[node name="InfoLabel" type="Label" parent="UI/InfoPanel"]
+layout_mode = 2
+anchors_preset = 15
+offset_left = 10.0
+offset_top = 10.0
+offset_right = -10.0
+offset_bottom = -10.0
+autowrap_mode = 1
+mouse_filter = 0
+
+[node name="Crosshair" type="TextureRect" parent="UI"]
+layout_mode = 2
+anchors_preset = 15
+offset_left = -12.0
+offset_top = -12.0
+offset_right = 12.0
+offset_bottom = 12.0
+mouse_filter = 0
